@@ -202,10 +202,46 @@ async function settings(p, tab) {
     const [d, dm] = await Promise.all([api('/api/deployments?project=' + p.id).catch(() => []), api('/api/domain?project=' + p.id).catch(() => ({}))]), l = d[0];
     body = `<h2>انتشار</h2><div class="bx"><div class="rw"><span class="g">${l?.status === 'success' ? 'سایت شما منتشر شده است:' : 'وضعیت آخرین انتشار: ' + (l ? esc(st(l.status)) : 'هنوز انتشاری ثبت نشده')} <a class="ltr" target="_blank" rel="noopener" href="https://${esc(host(p))}">https://${esc(host(p))}</a>${l ? `<br><small>آخرین انتشار ${ago(l.at)}</small>` : ''}</span><a class="bt" target="_blank" rel="noopener" href="https://${esc(host(p))}">مشاهده سایت</a></div></div>
 <p class="mu">فقط فایل‌های استاتیک پشتیبانی می‌شوند و با هر ذخیره، سایت به‌طور خودکار منتشر می‌شود.</p>
-<h2 style="margin-top:32px">دامنه سفارشی</h2>${dm.hostname ? `<p><b class="ltr">${esc(dm.hostname)}</b> <span class="pill">${esc(dm.status)}</span></p>${dm.error ? `<p style="color:var(--rd)">${esc(dm.error)}</p>` : ''}<p class="mu">در DNS دامنه خود یک رکورد CNAME به <b class="ltr">${esc(dm.cname)}</b> بسازید. بعد از تأیید DNS، SSL خودکار فعال می‌شود.</p><button class="bt dg" onclick="rmDom()">حذف دامنه</button>` : `<p class="mu">فقط زیردامنه‌هایی مثل www.example.com پشتیبانی می‌شوند، نه دامنه ریشه.</p><div class="row"><input id="hn" class="ltr" placeholder="www.example.com" style="width:260px"><button class="bt pr" onclick="addDom()">ذخیره</button></div>`}`;
+<h2 style="margin-top:32px">دامنه سفارشی</h2>${domBlock(p, dm)}`;
   }
   const r = '#/r/' + p.id + '/settings';
   shell(`<div class="st"><nav class="sn"><a class="${tab === 'general' ? 'on' : ''}" href="${r}">عمومی</a><a class="${tab === 'pages' ? 'on' : ''}" href="${r}/pages">انتشار و دامنه</a></nav><div>${body}</div></div>`, p, '/settings');
+}
+
+const DST = { active: ['فعال', 'ok'], pending: ['در انتظار تأیید DNS', ''], initializing: ['در حال بررسی', ''], verifying: ['در حال بررسی', ''], blocked: ['مسدود', 'er'], error: ['خطا', 'er'], deactivated: ['غیرفعال', 'er'] };
+const cp = (t, el) => { const done = () => { const o = el.textContent; el.textContent = 'کپی شد ✓'; setTimeout(() => el.textContent = o, 1500) }; if (navigator.clipboard) navigator.clipboard.writeText(t).then(done, () => toast('کپی نشد؛ متن را دستی انتخاب کنید')); else toast('کپی نشد؛ متن را دستی انتخاب کنید') };
+const cpRow = (label, val) => `<div class="rw" style="gap:10px;align-items:center"><span style="min-width:70px" class="mu">${label}</span><b class="ltr g" style="word-break:break-all">${esc(val)}</b><button class="bt" type="button" data-cp="${esc(val)}" onclick="cp(this.dataset.cp,this)">کپی</button></div>`;
+function domBlock(p, dm) {
+  const target = dm.cname || p.pg || (p.id + '.pages.dev');
+  if (!dm.hostname) {
+    return `<p class="mu">دامنه خودتان را به این سایت وصل کنید. دامنه را هر جا که خریده‌اید (مثلاً ایران‌سرور، گودی، نیم‌چیپ و...) می‌توانید نگه دارید؛ نیازی به انتقال دامنه نیست.</p>
+<div class="bx"><div class="rw" style="display:block"><b>قبل از شروع بدانید</b><ul class="mu" style="line-height:2;margin:8px 0 0"><li>فقط <b>زیردامنه</b> پشتیبانی می‌شود، مثل <span class="ltr">www.example.com</span> یا <span class="ltr">blog.example.com</span>. دامنه ریشه (<span class="ltr">example.com</span> بدون www) پشتیبانی نمی‌شود.</li><li>هر سایت فقط یک دامنه سفارشی می‌تواند داشته باشد.</li><li>برای وصل شدن آی‌پی لازم نیست. فقط یک رکورد <b class="ltr">CNAME</b> می‌سازید، نه رکورد A.</li></ul></div></div>
+<div class="row" style="margin-top:12px"><input id="hn" class="ltr" placeholder="www.example.com" style="width:260px" autocomplete="off" spellcheck="false"><button class="bt pr" onclick="addDom()">ثبت دامنه</button></div>
+<p class="mu" style="font-size:12px">بعد از ثبت، مقدار رکورد DNS همین‌جا نشان داده می‌شود و راهنمای وصل کردن را می‌بینید.</p>`;
+  }
+  const dn = dm.hostname, parts = dn.split('.'), sub = parts.length > 2 ? parts[0] : dn;
+  const [lbl, cls] = DST[dm.status] || [dm.status || 'نامشخص', ''];
+  const live = dm.status === 'active';
+  return `<div class="bx"><div class="rw" style="gap:10px"><b class="ltr g">${esc(dn)}</b><span class="pill ${cls}">${esc(lbl)}</span></div></div>
+${dm.error ? `<p style="color:var(--rd)">${esc(dm.error)}</p>` : ''}
+${live ? `<p style="color:#3fb950"><b>دامنه شما فعال است.</b> سایت از آدرس <a class="ltr" target="_blank" rel="noopener" href="https://${esc(dn)}">https://${esc(dn)}</a> باز می‌شود و گواهی امنیتی (SSL) هم خودکار فعال شده است.</p>` : `<h3>مرحله بعد: رکورد DNS را بسازید</h3>
+<p class="mu">وارد پنل مدیریت DNS همان جایی شوید که دامنه را خریده‌اید (یا نیم‌سرور دامنه روی آن است) و یک رکورد جدید با مشخصات زیر بسازید:</p>
+<div class="bx">${cpRow('نوع (Type)', 'CNAME')}${cpRow('نام (Name)', sub)}${cpRow('مقدار (Target)', target)}</div>
+<h3 style="margin-top:20px">راهنمای قدم‌به‌قدم</h3>
+<ol class="mu" style="line-height:2.2;padding-inline-start:22px">
+<li>وارد حساب سرویس‌دهنده دامنه خود شوید و بخش <b>مدیریت DNS</b> (یا «رکوردهای DNS» / «Zone Editor») را باز کنید.</li>
+<li>اگر برای همین نام قبلاً رکورد <b class="ltr">A</b> یا <b class="ltr">AAAA</b> یا <b class="ltr">CNAME</b> دیگری هست، آن را <b>حذف کنید</b>. برای یک نام فقط یک رکورد می‌تواند باشد.</li>
+<li>رکورد جدید بسازید: نوع <b class="ltr">CNAME</b>، نام <b class="ltr">${esc(sub)}</b>، مقدار <b class="ltr">${esc(target)}</b>.</li>
+<li>اگر گزینه‌ای مثل «Proxy» یا «ابر نارنجی» دارید، فعلاً آن را <b>خاموش</b> بگذارید (DNS only) تا تأیید کامل شود.</li>
+<li>ذخیره کنید و بین چند دقیقه تا چند ساعت صبر کنید. این صفحه را رفرش کنید؛ وقتی وضعیت <b>فعال</b> شد، سایت روی دامنه شما باز می‌شود.</li>
+</ol>
+<details class="mu" style="margin:12px 0"><summary style="cursor:pointer">اگر وصل نشد (رفع مشکل)</summary><ul style="line-height:2">
+<li>مقدار رکورد را دقیقاً کپی کنید؛ حتی یک نقطه یا فاصله اضافه مشکل ایجاد می‌کند.</li>
+<li>به جای <span class="ltr">${esc(dn)}</span> کل نام دامنه را در فیلد «نام» نگذارید؛ فقط <span class="ltr">${esc(sub)}</span> کافی است (بعضی پنل‌ها خودشان بقیه را اضافه می‌کنند).</li>
+<li>تا ۲۴ ساعت ممکن است طول بکشد؛ اگر دامنه تازه خریده‌اید یا نیم‌سرور را تازه عوض کرده‌اید بیشتر هم می‌شود.</li>
+<li>مطمئن شوید دامنه ریشه یا نام دیگری را اشتباهی انتخاب نکرده‌اید و رکورد قدیمی حذف شده است.</li>
+<li>اگر بعد از ۲۴ ساعت هنوز در انتظار بود، دامنه را حذف و دوباره ثبت کنید.</li></ul></details>`}
+<button class="bt dg" onclick="rmDom()">حذف دامنه</button>`;
 }
 async function addDom() { try { await api('/api/domain', 'POST', { project: S.p.id, hostname: $('#hn').value.trim() }); await load(1); S.p = S.list.find(x => x.id === S.p.id); settings(S.p, 'pages') } catch (e) { fail(e) } }
 async function rmDom() { if (!confirm('دامنه حذف شود؟')) return; try { await api('/api/domain', 'DELETE', { project: S.p.id }); await load(1); S.p = S.list.find(x => x.id === S.p.id); settings(S.p, 'pages') } catch (e) { fail(e) } }
