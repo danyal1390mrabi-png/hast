@@ -49,18 +49,27 @@ const IC = { f: '<path d="M2 4h4l1.5 1.5H14v7H2z"/>', d: '<path d="M4 2h5l3 3v9H
 const ic = (n, c = '') => `<svg class="i" style="${c}" viewBox="0 0 16 16">${IC[n]}</svg>`;
 const LOGO = '<svg width="30" height="30" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="#4493f8"/><path d="M12 11l-5 5 5 5M20 11l5 5-5 5" stroke="#fff" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 let S = { me: null, list: [], base: '', q: '' }, tt;
-const toast = m => { $('#toast').innerHTML = `<span>${esc(m)}</span>`; clearTimeout(tt); tt = setTimeout(() => $('#toast').innerHTML = '', 4500) };
+const toast = (m, keep) => { $('#toast').innerHTML = `<span>${esc(m)}</span>`; clearTimeout(tt); if (!keep) tt = setTimeout(() => $('#toast').innerHTML = '', 4500) };
 const fail = e => { toast(e.message || 'خطا'); console.error(e) };
 const kb = n => n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : (n / 1024).toFixed(1) + ' KB';
 const ago = t => { const s = (new Date(t) - Date.now()) / 1000, r = new Intl.RelativeTimeFormat('fa', { numeric: 'auto' }); for (const [u, n] of [['year', 31536e3], ['month', 2592e3], ['week', 6048e2], ['day', 864e2], ['hour', 3600], ['minute', 60]]) if (Math.abs(s) >= n) return r.format(Math.round(s / n), u); return 'همین حالا' };
 const host = p => p.host;
 const ST = { success: 'موفق', failure: 'ناموفق', active: 'در حال انجام', idle: 'در انتظار', canceled: 'لغو شد', skipped: 'رد شد' }, st = x => ST[x] || x || '-';
 const STG = { queued: 'در صف', initialize: 'آماده‌سازی', clone_repo: 'دریافت فایل‌ها', build: 'ساخت', deploy: 'انتشار' }, stg = x => STG[x] || x || '-';
-async function api(p, m = 'GET', b) {
-  const r = await fetch(CFG.API_URL + p, { method: m, headers: { authorization: 'Bearer ' + (localStorage.tk || ''), 'content-type': 'application/json' }, body: b ? JSON.stringify(b) : undefined });
-  const d = await r.json().catch(() => ({})); if (r.status === 401 && localStorage.tk) { localStorage.removeItem('tk'); S.me = null; authView() } if (!r.ok) throw new Error(d.error || 'خطا در ارتباط با سرور'); return d;
+async function api(p, m = 'GET', b, ms = 60000) {
+  const ac = new AbortController(), to = setTimeout(() => ac.abort(), ms); let r, d;
+  try {
+    r = await fetch(CFG.API_URL + p, { method: m, signal: ac.signal, headers: { authorization: 'Bearer ' + (localStorage.tk || ''), 'content-type': 'application/json' }, body: b ? JSON.stringify(b) : undefined });
+    d = await r.json().catch(() => ({}));
+  } catch (e) { throw Object.assign(new Error(e.name === 'AbortError' ? 'پاسخ از سرور دیر رسید؛ دوباره تلاش کنید' : 'ارتباط با سرور برقرار نشد؛ اینترنت یا فیلترشکن را بررسی کنید'), { net: 1 }) }
+  finally { clearTimeout(to) }
+  if (r.status === 401 && localStorage.tk) { localStorage.removeItem('tk'); S.me = null; authView() }
+  if (!r.ok) throw Object.assign(new Error(d.error || 'خطا در ارتباط با سرور'), { status: r.status }); return d;
 }
-async function load(force) { if (S.me && !force) return; const d = await api('/api/projects'); S.me = d.me; S.list = d.projects; S.base = d.base; S.total = d.total; S.limit = d.limit }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function retry(fn, n = 3) { for (let i = 1; ; i++) { try { return await fn() } catch (e) { if (i >= n || e.status === 401 || e.status === 403) throw e; await sleep(1200 * i) } } }
+let busy = 0;
+async function load(force) { if (S.me && !force) return; const d = await api('/api/projects'); S.me = d.me; S.list = d.projects; S.base = d.base; S.total = d.total; S.limit = d.limit; if (S.ex && Date.now() - S.ex.at < 120000 && !S.list.some(x => x.id === S.ex.p.id)) S.list.unshift(S.ex.p) }
 function theme() { const e = document.documentElement; e.dataset.t = e.dataset.t === 'dark' ? 'light' : 'dark'; localStorage.t = e.dataset.t }
 if (localStorage.t) document.documentElement.dataset.t = localStorage.t;
 document.addEventListener('click', () => document.querySelectorAll('[data-m]').forEach(m => m.hidden = true));
@@ -104,20 +113,27 @@ async function verify() {
 }
 const logout = async () => { try { await api('/api/auth/logout', 'POST', {}) } catch {} localStorage.removeItem('tk'); S.me = null; authView() };
 
+let nav = 0;
 async function router() {
-  const m = decodeURIComponent(location.hash.slice(1)).split('/').filter(Boolean);
+  const T = ++nav; let m = [];
+  try { m = decodeURIComponent(location.hash.slice(1)).split('/').filter(Boolean) } catch { m = [] }
   try {
-    await load();
+    await load(); if (T !== nav) return;
     if (m[0] === 'new') return newRepo();
     if (m[0] === 'r') {
-      const p = S.list.find(x => x.id === m[1]); if (!p) return home();
+      let p = S.list.find(x => x.id === m[1]);
+      if (!p) { await load(1); if (T !== nav) return; p = S.list.find(x => x.id === m[1]) }
+      if (!p) return home();
       const sec = m[2] || '', rest = m.slice(3).join('/'); S.p = p;
       if (!sec) return code(p, ''); if (sec === 'tree') return code(p, rest); if (sec === 'blob') return blob(p, rest);
       if (sec === 'upload') return upload(p, rest); if (sec === 'new') return newFile(p, rest); if (sec === 'commits') return commits(p);
       if (sec === 'deployments') return deps(p); if (sec === 'settings') return settings(p, m[3] || 'general');
     }
     home();
-  } catch (e) { fail(e) }
+  } catch (e) {
+    fail(e);
+    if (T === nav && S.me) shell(`<div class="bx"><div class="rw" style="display:block;text-align:center;padding:32px"><h3>بارگذاری انجام نشد</h3><p class="mu">${esc(e.message || 'خطا')}</p><div class="row" style="justify-content:center"><button class="bt pr" onclick="router()">تلاش دوباره</button><a class="bt" href="#/">صفحه اصلی</a></div></div></div>`, m[0] === 'r' ? S.list.find(x => x.id === m[1]) : null, '');
+  }
 }
 function home() {
   const mine = S.list.length, max = S.me.max_sites;
@@ -131,14 +147,22 @@ function newRepo() {
   shell(`<div style="max-width:700px;margin:0 auto"><h1>ساخت سایت جدید</h1><p class="mu">هر سایت یک آدرس مستقل دارد. ${S.list.length} از ${S.me.max_sites} سایت مجاز شما استفاده شده است.</p><hr style="border:0;border-top:1px solid var(--ln)"><form onsubmit="mk(event)"><label class="fld"><b>نام پروژه *</b><input name="name" required></label><label class="fld"><b>نام در آدرس *</b><span class="row"><input name="sub" class="ltr" placeholder="portfolio" required style="max-width:240px"><span class="mu ltr">.${esc(S.me.sites_domain || 'pages.dev')}</span></span></label><hr style="border:0;border-top:1px solid var(--ln)"><button class="bt pr" id="mkb">ساخت سایت</button></form></div>`);
 }
 async function mk(ev) {
-  ev.preventDefault(); const f = new FormData(ev.target); $('#mkb').disabled = true; toast('در حال ساخت سایت…');
-  try { const p = await api('/api/projects', 'POST', { name: f.get('name'), sub: f.get('sub') }); await load(1); toast('سایت ساخته شد'); location.hash = '#/r/' + p.id } catch (e) { fail(e); $('#mkb').disabled = false }
+  ev.preventDefault(); const f = new FormData(ev.target), sub = String(f.get('sub') || '').trim().toLowerCase(); $('#mkb').disabled = true; toast('در حال ساخت سایت؛ ممکن است تا یک دقیقه طول بکشد…', 1);
+  try {
+    const p = await api('/api/projects', 'POST', { name: f.get('name'), sub: f.get('sub') }, 150000);
+    S.ex = { p, at: Date.now() }; await load(1).catch(() => {}); if (!S.list.some(x => x.id === p.id)) S.list.unshift(p);
+    toast('سایت ساخته شد'); location.hash = '#/r/' + p.id;
+  } catch (e) {
+    // اگر پاسخ نرسید ولی سایت ساخته شده بود، مستقیم به همان برو
+    if (e.net) { try { await load(1); const q = S.list.find(x => x.id === sub); if (q) { toast('سایت ساخته شد'); return location.hash = '#/r/' + q.id } } catch {} }
+    fail(e); const b = $('#mkb'); if (b) b.disabled = false;
+  }
 }
-const tree = async p => (await api('/api/tree?project=' + p.id)).tree;
+const tree = async p => (await retry(() => api('/api/tree?project=' + p.id))).tree;
 const commit = (p, files, msg) => api('/api/commit', 'POST', { project: p.id, message: msg || 'Update', files });
 async function code(p, dir) {
-  shell('<p class="mu">در حال بارگذاری…</p>', p, '');
-  const [t, c, d] = await Promise.all([tree(p), api('/api/commits?project=' + p.id).catch(() => []), api('/api/deployments?project=' + p.id).catch(() => [])]);
+  const T = nav; shell('<p class="mu">در حال بارگذاری…</p>', p, '');
+  const [t, c, d] = await Promise.all([tree(p), api('/api/commits?project=' + p.id).catch(() => []), api('/api/deployments?project=' + p.id).catch(() => [])]); if (T !== nav) return;
   const pre = dir ? dir + '/' : '', ds = new Set(), fs = [];
   for (const f of t) { if (!f.path.startsWith(pre)) continue; const r = f.path.slice(pre.length), i = r.indexOf('/'); if (i < 0) fs.push({ ...f, name: r }); else ds.add(r.slice(0, i)) }
   const par = dir.includes('/') ? dir.slice(0, dir.lastIndexOf('/')) : '', cr = dir.split('/').filter(Boolean);
@@ -153,20 +177,20 @@ ${!ds.size && !fs.length ? '<div class="rw mu">این پوشه خالی است.<
 <aside><h3>درباره</h3><p class="mu">سایت استاتیک شما</p><p><a class="ltr" style="display:block" target="_blank" rel="noopener" href="https://${esc(host(p))}">${esc(host(p))}</a></p><hr style="border:0;border-top:1px solid var(--ln)"><h3><a href="#/r/${p.id}/deployments" style="color:var(--tx)">انتشارها</a> <span class="pill">${d.length}</span></h3>${l ? `<p>${ic('k', ok ? 'color:#3fb950' : '')} <span class="pill ${ok ? 'ok' : l.status === 'failure' ? 'er' : ''}">${esc(st(l.status))}</span> <span class="mu">${ago(l.at)}</span></p>` : '<p class="mu">هنوز انتشاری ثبت نشده است.</p>'}</aside></div>`, p, '');
 }
 async function blob(p, path) {
-  const t = await tree(p), f = t.find(x => x.path === path); if (!f) { toast('فایل پیدا نشد'); return history.back() }
+  const T = nav, t = await tree(p), f = t.find(x => x.path === path); if (T !== nav) return; if (!f) { toast('فایل پیدا نشد'); return location.hash = '#/r/' + p.id }
   const ext = path.split('.').pop().toLowerCase(), dir = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '', txt = TEXT.test(path);
-  const b64 = (await api(`/api/blob?project=${p.id}&sha=${f.sha}`)).content.replace(/\n/g, ''); S.path = path; S.dir = dir;
+  const b64 = (await retry(() => api(`/api/blob?project=${p.id}&sha=${f.sha}`))).content.replace(/\n/g, ''); if (T !== nav) return; S.path = path; S.dir = dir;
   const body = txt ? `<textarea class="cd" id="tx" spellcheck="false">${esc(new TextDecoder().decode(Uint8Array.from(atob(b64), c => c.charCodeAt(0))))}</textarea>` : IMG[ext] ? `<div style="padding:16px;text-align:center"><img style="max-width:100%" src="data:${IMG[ext]};base64,${b64}"></div>` : '<div class="rw mu">پیش‌نمایش این نوع فایل ممکن نیست.</div>';
   shell(`<div class="row ltr"><a href="#/r/${p.id}">${esc(p.name)}</a> / <b>${esc(path)}</b></div><div class="bx"><div class="bh"><b class="ltr">${esc(path.split('/').pop())}</b><span class="mu">${kb(f.size)}</span></div>${body}</div>
 <div class="bx"><div class="bh"><b>ذخیره تغییرات</b></div><div class="rw" style="display:block"><input id="cm" style="width:100%;max-width:600px" value="${txt ? 'ویرایش ' : ''}${esc(path.split('/').pop())}"><div class="row">${txt ? '<button class="bt pr" onclick="doSave()">ذخیره تغییرات</button>' : ''}<button class="bt dg" onclick="doDel()">حذف فایل</button><a class="bt" href="#/r/${p.id}${dir ? '/tree/' + enc(dir) : ''}">انصراف</a></div></div></div>`, p, '');
 }
 const back = () => location.hash = '#/r/' + S.p.id + (S.dir ? '/tree/' + enc(S.dir) : '');
-async function doSave() { try { await commit(S.p, [{ path: S.path, content: $('#tx').value }], $('#cm').value); toast('ذخیره شد؛ انتشار در حال انجام است'); back() } catch (e) { fail(e) } }
-async function doDel() { if (!confirm('حذف ' + S.path + '؟')) return; try { await commit(S.p, [{ path: S.path, delete: true }], 'حذف ' + S.path); toast('حذف شد'); back() } catch (e) { fail(e) } }
+async function doSave() { if (busy) return; busy = 1; try { await commit(S.p, [{ path: S.path, content: $('#tx').value }], $('#cm').value); toast('ذخیره شد؛ انتشار در حال انجام است'); back() } catch (e) { fail(e) } finally { busy = 0 } }
+async function doDel() { if (!confirm('حذف ' + S.path + '؟')) return; if (busy) return; busy = 1; try { await commit(S.p, [{ path: S.path, delete: true }], 'حذف ' + S.path); toast('حذف شد'); back() } catch (e) { fail(e) } finally { busy = 0 } }
 function newFile(p, dir) {
   S.dir = dir; shell(`<h1>ساخت فایل جدید</h1><div class="row"><input id="nf" class="ltr" style="flex:1;max-width:500px" placeholder="نام فایل، مثل index.html" value="${esc(dir ? dir + '/' : '')}"></div><div class="bx"><textarea class="cd" id="tx" spellcheck="false"></textarea></div><input id="cm" style="width:100%;max-width:600px" value="ساخت فایل"><div class="row"><button class="bt pr" onclick="doNew()">ذخیره تغییرات</button><a class="bt" href="#/r/${p.id}">انصراف</a></div>`, p, '');
 }
-async function doNew() { const n = $('#nf').value.trim(); if (!TEXT.test(n)) return toast('پسوند فایل باید متنی باشد (html, css, js, …)'); try { await commit(S.p, [{ path: n, content: $('#tx').value }], $('#cm').value); toast('فایل ساخته شد'); back() } catch (e) { fail(e) } }
+async function doNew() { const n = $('#nf').value.trim(); if (!TEXT.test(n)) return toast('پسوند فایل باید متنی باشد (html, css, js, …)'); if (busy) return; busy = 1; try { await commit(S.p, [{ path: n, content: $('#tx').value }], $('#cm').value); toast('فایل ساخته شد'); back() } catch (e) { fail(e) } finally { busy = 0 } }
 function upload(p, dir) {
   S.dir = dir; shell(`<h1>آپلود فایل</h1><p class="mu">فایل‌ها یا یک ZIP را بکشید. ZIP خودکار باز می‌شود.${dir ? ' مقصد: ' + esc(dir) : ''}</p><div class="dz" id="dz"><p>فایل‌ها را اینجا رها کنید یا انتخاب کنید</p><input type="file" id="up" multiple onchange="$('#cnt').textContent=this.files.length+' فایل انتخاب شد'"><p class="mu" id="cnt"></p></div><input id="cm" style="width:100%;max-width:600px" value="آپلود فایل"><div class="row"><button class="bt pr" onclick="doUp()">ذخیره تغییرات</button><a class="bt" href="#/r/${p.id}${dir ? '/tree/' + enc(dir) : ''}">انصراف</a></div>`, p, '');
   const z = $('#dz'); z.ondragover = e => { e.preventDefault(); z.classList.add('on') }; z.ondragleave = () => z.classList.remove('on'); z.ondrop = e => { e.preventDefault(); $('#up').files = e.dataTransfer.files; $('#up').onchange() };
@@ -181,25 +205,34 @@ async function push(files, msg) {
   for (const f of files) { const l = f.content.length; if (l * .75 > 25e6) throw new Error(f.path + ' بزرگ‌تر از ۲۵ مگابایت است'); if ((f.binary && b >= 40) || z + l > 2e7 || g.length >= 300) await fl(); g.push(f); if (f.binary) b++; z += l }
   await fl();
 }
+const OKP = /^[\w\-. \u0600-\u06FF]+(\/[\w\-. \u0600-\u06FF]+)*$/, OKX = /\.(html?|css|m?js|json|txt|md|xml|svg|map|webmanifest|csv|png|jpe?g|gif|webp|avif|ico|woff2?|ttf|otf|pdf)$|(^|\/)(_headers|_redirects)$/i;
+const okf = p => p.length <= 200 && OKP.test(p) && OKX.test(p) && !p.split('/').some(x => x === '.' || x === '..' || x.startsWith('.git')) && !/^(_worker\.js|functions\/)/.test(p);
 async function doUp() {
   const fs = [...$('#up').files]; if (!fs.length) return toast('فایلی انتخاب نشده است'); const pre = S.dir ? S.dir + '/' : '';
-  try { const all = []; for (const f of fs) all.push(...(/\.zip$/i.test(f.name) ? await zipFiles(f, pre) : [await rd(f, pre)])); toast('در حال آپلود…'); await push(all, $('#cm').value); toast('آپلود شد؛ انتشار در حال انجام است'); back() } catch (e) { fail(e) }
+  if (busy) return; busy = 1;
+  try {
+    const all = []; for (const f of fs) all.push(...(/\.zip$/i.test(f.name) ? await zipFiles(f, pre) : [await rd(f, pre)]));
+    const good = all.filter(f => okf(f.path)), bad = all.filter(f => !okf(f.path));
+    if (!good.length) return toast('هیچ فایل مجازی پیدا نشد (فقط html، css، js، عکس، فونت و pdf)');
+    toast('در حال آپلود…', 1); await push(good, $('#cm').value);
+    toast('آپلود شد؛ انتشار در حال انجام است' + (bad.length ? ` | ${bad.length} فایل نامجاز رد شد: ${bad.slice(0, 3).map(x => x.path.split('/').pop()).join('، ')}` : '')); back();
+  } catch (e) { fail(e) } finally { busy = 0 }
 }
 async function commits(p) {
-  const c = await api('/api/commits?project=' + p.id);
+  const T = nav, c = await api('/api/commits?project=' + p.id); if (T !== nav) return;
   shell(`<h2>تاریخچه تغییرات</h2><div class="bx">${c.map(x => `<div class="rw"><span class="g"><b>${esc(x.msg)}</b></span><span class="mu ltr">${x.sha}</span><small>${ago(x.at)}</small></div>`).join('')}</div>`, p, '');
 }
 async function deps(p) {
-  const d = await api('/api/deployments?project=' + p.id); S.p = p;
+  const T = nav, d = await api('/api/deployments?project=' + p.id); if (T !== nav) return; S.p = p;
   shell(`<div class="row" style="justify-content:space-between"><h2 style="border:0;margin:0">انتشارها</h2><button class="bt pr" onclick="dep()">انتشار مجدد</button></div><div class="bx">${d.map(x => `<div class="rw"><span class="pill ${x.status === 'success' ? 'ok' : x.status === 'failure' ? 'er' : ''}">${esc(st(x.status))}</span><span class="g"><b>${esc(x.msg || 'بدون پیام')}</b><br><small>${x.env === 'production' ? 'اصلی' : 'آزمایشی'} / ${esc(stg(x.stage))} / ${ago(x.at)}</small></span>${x.url ? `<a target="_blank" rel="noopener" href="${esc(x.url)}">باز کردن</a>` : ''}${x.status === 'success' && x.env === 'production' ? `<button class="bt" onclick="rb('${x.id}')">بازگشت به این نسخه</button>` : ''}</div>`).join('') || '<div class="rw mu">هنوز انتشاری ثبت نشده است.</div>'}</div>`, p, '/deployments');
 }
-async function dep() { try { await api('/api/deploy', 'POST', { project: S.p.id }); toast('انتشار مجدد درخواست شد'); deps(S.p) } catch (e) { fail(e) } }
-async function rb(id) { if (!confirm('بازگشت به این نسخه؟')) return; try { await api('/api/rollback', 'POST', { project: S.p.id, id }); toast('انجام شد'); deps(S.p) } catch (e) { fail(e) } }
+async function dep() { if (busy) return; busy = 1; try { await api('/api/deploy', 'POST', { project: S.p.id }); toast('انتشار مجدد درخواست شد'); deps(S.p) } catch (e) { fail(e) } finally { busy = 0 } }
+async function rb(id) { if (!confirm('بازگشت به این نسخه؟')) return; if (busy) return; busy = 1; try { await api('/api/rollback', 'POST', { project: S.p.id, id }); toast('انجام شد'); deps(S.p) } catch (e) { fail(e) } finally { busy = 0 } }
 async function settings(p, tab) {
-  let body = '';
+  let body = ''; const T = nav;
   if (tab === 'general') body = `<h2>عمومی</h2><label class="fld"><b>نام پروژه</b><input value="${esc(p.name)}" readonly></label><label class="fld"><b>آدرس سایت</b><input class="ltr" value="${esc(p.host)}" readonly></label><p class="mu">تغییر نام پروژه و زیردامنه پشتیبانی نمی‌شود.</p><h2 style="color:var(--rd);margin-top:40px">منطقه خطر</h2><div class="bx rd"><div class="rw" style="display:block"><b>حذف این پروژه</b><p class="mu">همه فایل‌ها و سایت برای همیشه پاک می‌شوند. برای تأیید، نام پروژه (<b class="ltr">${esc(p.sub)}</b>) را تایپ کنید.</p><div class="row"><input id="cf" class="ltr"><button class="bt dg" onclick="delp()">حذف پروژه</button></div></div></div>`;
   else {
-    const [d, dm] = await Promise.all([api('/api/deployments?project=' + p.id).catch(() => []), api('/api/domain?project=' + p.id).catch(() => ({}))]), l = d[0];
+    const [d, dm] = await Promise.all([api('/api/deployments?project=' + p.id).catch(() => []), api('/api/domain?project=' + p.id).catch(() => ({}))]), l = d[0]; if (T !== nav) return;
     body = `<h2>انتشار</h2><div class="bx"><div class="rw"><span class="g">${l?.status === 'success' ? 'سایت شما منتشر شده است:' : 'وضعیت آخرین انتشار: ' + (l ? esc(st(l.status)) : 'هنوز انتشاری ثبت نشده')} <a class="ltr" target="_blank" rel="noopener" href="https://${esc(host(p))}">https://${esc(host(p))}</a>${l ? `<br><small>آخرین انتشار ${ago(l.at)}</small>` : ''}</span><a class="bt" target="_blank" rel="noopener" href="https://${esc(host(p))}">مشاهده سایت</a></div></div>
 <p class="mu">فقط فایل‌های استاتیک پشتیبانی می‌شوند و با هر ذخیره، سایت به‌طور خودکار منتشر می‌شود.</p>
 <h2 style="margin-top:32px">دامنه سفارشی</h2>${domBlock(p, dm)}`;
@@ -243,9 +276,9 @@ ${live ? `<p style="color:#3fb950"><b>دامنه شما فعال است.</b> س�
 <li>اگر بعد از ۲۴ ساعت هنوز در انتظار بود، دامنه را حذف و دوباره ثبت کنید.</li></ul></details>`}
 <button class="bt dg" onclick="rmDom()">حذف دامنه</button>`;
 }
-async function addDom() { try { await api('/api/domain', 'POST', { project: S.p.id, hostname: $('#hn').value.trim() }); await load(1); S.p = S.list.find(x => x.id === S.p.id); settings(S.p, 'pages') } catch (e) { fail(e) } }
-async function rmDom() { if (!confirm('دامنه حذف شود؟')) return; try { await api('/api/domain', 'DELETE', { project: S.p.id }); await load(1); S.p = S.list.find(x => x.id === S.p.id); settings(S.p, 'pages') } catch (e) { fail(e) } }
-async function delp() { try { await api('/api/project', 'DELETE', { project: S.p.id, confirm: $('#cf').value.trim() }); toast('پروژه حذف شد'); await load(1); location.hash = '#/' } catch (e) { fail(e) } }
+async function addDom() { if (busy) return; busy = 1; try { await api('/api/domain', 'POST', { project: S.p.id, hostname: $('#hn').value.trim() }); await load(1); S.p = S.list.find(x => x.id === S.p.id); settings(S.p, 'pages') } catch (e) { fail(e) } finally { busy = 0 } }
+async function rmDom() { if (!confirm('دامنه حذف شود؟')) return; if (busy) return; busy = 1; try { await api('/api/domain', 'DELETE', { project: S.p.id }); await load(1); S.p = S.list.find(x => x.id === S.p.id); settings(S.p, 'pages') } catch (e) { fail(e) } finally { busy = 0 } }
+async function delp() { if (busy) return; busy = 1; try { await api('/api/project', 'DELETE', { project: S.p.id, confirm: $('#cf').value.trim() }, 120000); S.ex = null; toast('پروژه حذف شد'); await load(1); location.hash = '#/' } catch (e) { fail(e) } finally { busy = 0 } }
 window.addEventListener('hashchange', () => localStorage.tk && router());
 localStorage.tk ? router() : authView();
 </script>
